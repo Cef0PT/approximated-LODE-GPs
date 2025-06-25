@@ -22,5 +22,5 @@ train_y = torch.stack([y0, y1, y2], dim=-1)
 
 # 1. Model definition
 likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=3)
-model = LODEGP(train_x, train_y, likelihood, 3, ODE_name="Bipendulum", verbose=True, system_parameters={"l1": 1.0, "l2": 2.0}, base_kernel="Matern_kernel_52")
+model = LODEGP(train_x, train_y, likelihood, 3, ODE_name="Bipendulum", verbose=True, approx=True, system_parameters={"l1": 1.0, "l2": 2.0}, base_kernel="SE_kernel")
 print(model(train_x))

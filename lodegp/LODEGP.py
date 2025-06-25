@@ -206,7 +206,7 @@ def unknown(**kwargs):
 # LODEGP Class
 #=======================================================================
 class LODEGP(gpytorch.models.ExactGP):
-    def __init__(self, train_x, train_y, likelihood, num_tasks, **kwargs):
+    def __init__(self, train_x, train_y, likelihood, num_tasks, approx=False, number_of_eigenvalues=200, **kwargs):
         super(LODEGP, self).__init__(train_x, train_y, likelihood)
         self.mean_module = gpytorch.means.MultitaskMean(
             gpytorch.means.ZeroMean(), num_tasks=num_tasks
@@ -233,7 +233,11 @@ class LODEGP(gpytorch.models.ExactGP):
         V = sage_eval(f"matrix({str(V_temp)})", locals=self.sage_locals)
         self.V = V
         Vt = V.transpose()
-        kernel_matrix, self.kernel_translation_dict, parameter_dict = create_kernel_matrix_from_diagonal(D, base_kernel=base_kernel)
+        kernel_matrix, self.kernel_translation_dict, parameter_dict = create_kernel_matrix_from_diagonal(
+            D,
+            approx=approx,
+            base_kernel=base_kernel
+        )
         self.ode_count = self.num_tasks
         self.kernelsize = len(kernel_matrix)
         self.model_parameters.update(parameter_dict)
@@ -257,10 +261,30 @@ class LODEGP(gpytorch.models.ExactGP):
             "t_zeroes": torch.zeros_like(train_x-train_x.t())
         }
         self.matrix_multiplication = matrix(k.base_ring(), len(k[0]), len(k[0]), (V*k*Vt))
-        self.diffed_kernel = differentiate_kernel_matrix(k, V, Vt, self.kernel_translation_dict, dx1=dx2, dx2=dx2, base_kernel = base_kernel)
+        self.diffed_kernel = differentiate_kernel_matrix(
+            k,
+            V,
+            Vt,
+            self.kernel_translation_dict,
+            dx1=dx2,
+            dx2=dx2,
+            approx=approx,
+            base_kernel=base_kernel
+        )
         self.sum_diff_replaced = replace_sum_and_diff(self.diffed_kernel)
-        self.covar_description = translate_kernel_matrix_to_gpytorch_kernel(self.sum_diff_replaced, self.model_parameters, common_terms=self.common_terms)
-        self.covar_module = LODE_Kernel(self.covar_description, self.model_parameters)
+        self.covar_description = translate_kernel_matrix_to_gpytorch_kernel(
+            self.sum_diff_replaced,
+            self.model_parameters,
+            common_terms=self.common_terms,
+            approx=approx
+        )
+
+        self.covar_module = LODE_Kernel(
+            self.covar_description,
+            self.model_parameters,
+            approx=approx,
+            number_of_eigenvalues=number_of_eigenvalues
+        )
 
 
     def prepare_symbolic_ode_satisfaction_check(self, target, columnwise=True):
