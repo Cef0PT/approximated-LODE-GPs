@@ -134,8 +134,8 @@ class LODE_Kernel(Kernel):
                 if self.perm_rows_lin_op is None or self.perm_cols_lin_op is None:
                     # TODO: move this to __init__()?
                     h, w = K_list[0].shape
-                    perm_rows = torch.tensor([j * h + i for i in range(h) for j in range(kernel_count)])
-                    perm_cols = torch.tensor([j * w + i for i in range(w) for j in range(kernel_count)])
+                    perm_rows = torch.tensor([j * h + i for i in range(h) for j in range(kernel_count)]).to(K_list[0].device)
+                    perm_cols = torch.tensor([j * w + i for i in range(w) for j in range(kernel_count)]).to(K_list[0].device)
                     # TODO: Type casting was patched locally, create pull request?
                     self.perm_rows_lin_op = PermutationLinearOperator(perm_rows, dtype=K_lin_op.dtype)
                     self.perm_cols_lin_op = PermutationLinearOperator(perm_cols, dtype=K_lin_op.dtype)
