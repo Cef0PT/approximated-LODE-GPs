@@ -14,7 +14,7 @@ from gpytorch.settings import max_cholesky_size, max_preconditioner_size
 
 from lodegp.LODEGP import LODEGP
 
-DIRECTORY_PATH = Path("./data2/measure_run_time")
+DIRECTORY_PATH = Path("./data/measure_run_time")
 
 
 def log_warnings(rec):
@@ -190,8 +190,6 @@ def main():
                     if not run_all and (csv_data := get_run(run_id, csv_file_path)) is not None:
                         if csv_data[1] is not None:
                             failed.add(gp_id)
-                        else:
-                            succeded = True
                         logging.info(f"Found experiment {run_id} in csv file.\n")
                         continue
 
@@ -201,11 +199,11 @@ def main():
                     train_x, train_y = (data.to(device) for data in generate_data(nb_data))
 
                     # train model
-                    run_time, exc, model = train_gp(train_x, train_y, nb_eigenvalues, device, loss_calc_method)
+                    run_time, e, model = train_gp(train_x, train_y, nb_eigenvalues, device, loss_calc_method)
 
                     # write results to csv file
                     with open(csv_file_path, "a", encoding="utf-8") as f:
-                        f.write(f'\n{run_id},{run_time},"{exc}"')
+                        f.write(f'\n{run_id},{run_time},"{e}"')
 
                     if model is None:
                         # run failed
@@ -290,7 +288,7 @@ if __name__ == "__main__":
     # run experiments
     try:
         main()
-    except KeyboardInterrupt as e:
+    except KeyboardInterrupt as exc:
         # log keyboard interrupts, so they are not confused with OS kills
-        logging.error(type(e).__name__)
-        raise e
+        logging.error(type(exc).__name__)
+        raise exc
