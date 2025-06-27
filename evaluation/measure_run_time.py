@@ -14,7 +14,7 @@ from gpytorch.settings import max_cholesky_size, max_preconditioner_size
 
 from lodegp.LODEGP import LODEGP
 
-DIRECTORY_PATH = Path("./data/measure_run_time")
+DIRECTORY_PATH = Path("./data2/measure_run_time")
 
 
 def log_warnings(rec):
@@ -119,14 +119,46 @@ def get_run(run_id, fp):
         return None
 
 
-def handle_os_kill():
-    # TODO: check csv file / log. if last entry did not finish -> insert run as Exception "killed by OS"
-    #  (consider KeyboardInterrupt as not killed!)
-    pass
+def handle_os_kill(log_dir):
+    """
+        If we run an experiment or try to write a covariance matrix to file, we might use more memory than the OS
+        allows. This can lead to the whole process being killed, by the OS. In those cases there are only two possible
+        entries in the last line of the file.
+        Either
+        "INFO:root: Running experiment {run_id}" or
+        "INFO:root: Trying to write covariance tensor to file..."
+        In the second case the info of the run_id will be found in the 3rd line from the back.
+            -> loop through lines and always save the last 3 lines; after loop, check if the last line corresponds to an
+               OS kill and get the run_id depending on entry of last line (not necessarily the fastest solution, but
+               fast enough and pretty simple; log file rather small)
+    """
+    # get last log file path (the actual last log file is this run -> get second to last log file)
+    fp = sorted(log_dir.glob("*.log"))[-2]
+
+    # get last three lines
+    with open(fp, "r", encoding="utf-8") as f:
+        # discard headers
+        f.readline()
+        last_three = [""] * 3
+        while line := f.readline():
+            last_three[:2] = last_three[1:]
+            last_three[-1] = line
+
+    # look for run_id in last and third to last lines
+    # (we can assume this was an OS kill, if one of them contains the first case described in doc string)
+    match = re.search(r"Running experiment (N[0-9]+_n[0-9]+_.+)\n", last_three[-1] + last_three[0])
+    if match is not None:
+        run_id = match.group(1)
+
+        # add this run to csv file with exception "OS KILL"
+        with open(csv_file_path, "a", encoding="utf-8") as f:
+            f.write(f'\n{run_id},{-1.},"OS KILL"')
+
+        logging.info("OS KILL detected, written data to csv file")
 
 
 def main():
-    handle_os_kill()
+    handle_os_kill(log_path)
 
     if not csv_file_path.is_file() or run_all:
         with open(csv_file_path, "w", encoding="utf-8") as f:
@@ -256,4 +288,9 @@ if __name__ == "__main__":
     torch.manual_seed(42)
 
     # run experiments
-    main()
+    try:
+        main()
+    except KeyboardInterrupt as e:
+        # log keyboard interrupts, so they are not confused with OS kills
+        logging.error(type(e).__name__)
+        raise e
