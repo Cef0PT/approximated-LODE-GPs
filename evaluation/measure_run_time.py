@@ -133,6 +133,9 @@ def handle_os_kill(log_dir):
                fast enough and pretty simple; log file rather small)
     """
     # get last log file path (the actual last log file is this run -> get second to last log file)
+    all_fps = sorted(log_dir.glob("*.log"))[-2]
+    if len(all_fps) < 2:
+        return
     fp = sorted(log_dir.glob("*.log"))[-2]
 
     # get last three lines
