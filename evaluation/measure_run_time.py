@@ -65,8 +65,8 @@ def train_gp(train_x: torch.Tensor, train_y: torch.Tensor, nb_eigenvalues: int, 
         try:
             with max_cholesky_size(max_chol_size), max_preconditioner_size(0):
                 start_t = None
-                for i in range(1):
-                    if i == 0:
+                for i in range(25):
+                    if i == 5:
                         # start timing after 5 warm up iterations
                         start_t = time.perf_counter()
                     optimizer.zero_grad()
