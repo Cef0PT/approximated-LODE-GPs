@@ -84,7 +84,7 @@ def train_gp(train_x: torch.Tensor, train_y: torch.Tensor, nb_eigenvalues: int, 
             # Accept some error and return the error message
             log_warnings(warn_record)
             logging.error(type(e).__name__ + " - " + str(e) + "\n")
-            return time.perf_counter() - start_t, str(e), None
+            return -1., str(e), None
 
         except Exception as e:
             # Unexpected error -> log and raise
@@ -99,9 +99,11 @@ def covariance_to_file(train_x, model, fp):
             covar = model(train_x).covariance_matrix
             torch.save(covar, fp)
         logging.info(f"Covariance tensor successfully written to {fp}\n")
+        return None
     except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
         # covariance matrix will be dense tensor instead of linear operator -> more memory usage as in training
         logging.error(type(e).__name__ + " - " + str(e) + "\n")
+        return str(e)
 
 
 def get_run(run_id, fp):
@@ -110,13 +112,15 @@ def get_run(run_id, fp):
         f.readline()
 
         # check every line separately to minimize memory usage
+        e = []
+        t = None
         while line := f.readline():
             # split at every comma, except those in double quotes
             data = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', line.replace("\n", ""))
             if run_id == data[0]:
-                e = data[2][1:-1]
-                return float(data[1]), e if e != "None" else None
-        return None
+                t = float(data[1])
+                e.append(data[2][1:-1])
+        return t, list(filter(lambda s: s != "None", e))
 
 
 def handle_os_kill(log_dir):
@@ -149,13 +153,21 @@ def handle_os_kill(log_dir):
 
     # look for run_id in last and third to last lines
     # (we can assume this was an OS kill, if one of them contains the first case described in doc string)
-    match = re.search(r"Running experiment (N[0-9]+_n[0-9]+_.+)\n", last_three[-1] + last_three[0])
+    match = re.search(r"Running experiment (N[0-9]+_n[0-9]+_.+)\n", last_three[-1])
+    if match is not None:
+        error_message = "OS KILL"
+        t = -1.
+    else:
+        match = re.search(r"Running experiment (N[0-9]+_n[0-9]+_.+)", last_three[0])
+        error_message = "OS KILL file write"
+        t, _ = get_run(match.group(1), csv_file_path)
+
     if match is not None:
         run_id = match.group(1)
 
         # add this run to csv file with exception "OS KILL"
         with open(csv_file_path, "a", encoding="utf-8") as f:
-            f.write(f'\n{run_id},{-1.},"OS KILL"')
+            f.write(f'\n{run_id},{t},"{error_message}"')
 
         logging.info("OS KILL detected, written data to csv file")
 
@@ -179,20 +191,25 @@ def main():
 
     for all_gp_ids in [cuda_gp_ids, cpu_gp_ids]:
         # repeat training for increasing amount of data points until all gps fail
-        failed = set()
+        failed_train = set()
+        failed_file_write = set()
         nb_data = 1000
-        while not set(all_gp_ids).issubset(failed):
+        while not set(all_gp_ids).issubset(failed_train):
             for gp_id in all_gp_ids:
-                if gp_id not in failed:
+                if gp_id not in failed_train:
                     run_id = f"N{nb_data}_{gp_id}"
                     params = gp_id[1:].split("_")
                     nb_eigenvalues = int(params[0])
                     loss_calc_method = params[1]
                     device = torch.device(params[2])
 
-                    if not run_all and (csv_data := get_run(run_id, csv_file_path)) is not None:
-                        if csv_data[1] is not None:
-                            failed.add(gp_id)
+                    if not run_all and (csv_data := get_run(run_id, csv_file_path))[0] is not None:
+                        if (len(csv_data[1]) >= 1 and
+                                len(list(filter(lambda s: s != "OS KILL file write", csv_data[1]))) >= 1):
+                            failed_train.add(gp_id)
+                        if "OS KILL file write" in csv_data[1]:
+                            # catch OS kills on file write to avoid crashes in future experiments
+                            failed_file_write.add(gp_id)
                         logging.info(f"Found experiment {run_id} in csv file.\n")
                         continue
 
@@ -210,12 +227,17 @@ def main():
 
                     if model is None:
                         # run failed
-                        failed.add(gp_id)
+                        failed_train.add(gp_id)
+                        continue
+                    elif gp_id in failed_file_write:
+                        logging.info(f"Skipped writing of covariance function.\n")
                         continue
 
                     # write covar to file
                     logging.info("Trying to write covariance tensor to file...")
-                    covariance_to_file(train_x, model, covar_path / (run_id + ".pt"))
+                    e_msg = covariance_to_file(train_x, model, covar_path / (run_id + ".pt"))
+                    if e_msg is not None:
+                        failed_file_write.add(gp_id)
 
             nb_data += 1000
 
@@ -229,7 +251,7 @@ if __name__ == "__main__":
 
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument(
-        "-a", "--run_all",
+        "-a", "--run-all",
         default=False,
         action="store_true",
         help="Truncate csv file and run all experiments."
@@ -241,7 +263,7 @@ if __name__ == "__main__":
         help="Delete all logs and covariances before running experiments. Will always run all experiments."
     )
     arg_parser.add_argument(
-        "-o", "--output_file",
+        "-o", "--output-file",
         default="experiments.csv",
         type=len_gt_0,
         help="Output file name."
