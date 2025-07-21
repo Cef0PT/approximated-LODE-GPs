@@ -13,7 +13,6 @@ from gpytorch.kernels.kernel import Kernel
 from linear_operator.operators import (
     to_linear_operator,
     CatLinearOperator,
-    PermutationLinearOperator,
     DiagLinearOperator
 )
 from famgpytorch.functions import ChebyshevHermitePolynomials
@@ -33,19 +32,22 @@ torch_operations = {'mul': torch.mul, 'add': torch.add,
                     'pow': torch.pow, 'exp':torch.exp,
                     'sin':torch.sin, 'cos':torch.cos,
                     'log': torch.log}
-
+from .permutation_linear_operator import PermutationLinearOperator
 
 DEBUG =False
 
 
 class LODE_Kernel(Kernel):
-        def __init__(self, covar_description, model_parameters: ParameterDict, active_dims=None, approx=False, number_of_eigenvalues=200):
+        def __init__(self, covar_description, model_parameters: ParameterDict, active_dims=None, approx=False, number_of_eigenvalues=200, **kwargs):
             super(LODE_Kernel, self).__init__(active_dims=active_dims)
             self.covar_description = covar_description
             self.model_parameters = model_parameters
             self.num_tasks = len(covar_description)
             self.approx = approx
             self.number_of_eigenvalues = number_of_eigenvalues
+
+            # get kernel inputs
+            self.kernel_inputs = kwargs.get("approx_kernel_inputs", None)
 
             self.perm_rows_lin_op = None
             self.perm_cols_lin_op = None
@@ -83,27 +85,54 @@ class LODE_Kernel(Kernel):
             #            200
             #        )
 
-            # we need to compute each approx term on every forward call, however we only need to compute it once
-            # -> remember which approx term was already computed this forward call
-            computed_approx = set()
+            # we need to compute each kernel term on every forward call, however we only need to compute it once
+            # -> remember which kernel term was already computed this forward call
+            computed_kernel = set()
             K_list = list()
             for rownum, row in enumerate(self.covar_description):
                 for cell in row:
                     if self.approx:
                         # add approx se common term for each diffed se kernel
-                        for match in re.findall(r'common_terms\["approx_se_([0-9]+)_([0-9]+)_([0-9]+)"]', cell):
-                            if match not in computed_approx:
+                        for match in re.findall(r'common_terms\["approx_se_([0-9]+)_d1([0-9]+)_d2([0-9]+)"]', cell):
+                            if match not in computed_kernel:
                                 idx, derive_x1, derive_x2 = match
-                                common_terms[f"approx_se_{idx}_{derive_x1}_{derive_x2}"] = approx_rbf_covariance(
+                                common_terms[f"approx_se_{idx}_d1{derive_x1}_d2{derive_x2}"] = approx_rbf_covariance(
                                     x1,
                                     x2,
-                                    torch.exp(model_parameters['lengthscale_' + idx]),
-                                    torch.exp(model_parameters['alpha_' + idx]),
+                                    torch.exp(model_parameters['lengthscale_' + idx]) + float(1e-07),
+                                    torch.exp(model_parameters['alpha_' + idx]) + float(1e-07),
                                     self.number_of_eigenvalues,
                                     diff_order_x1=int(derive_x1),
                                     diff_order_x2=int(derive_x2)
                                 )
-                                computed_approx.add(match)
+                                computed_kernel.add(match)
+                        for match in re.findall(r'common_terms\["(s_[0-9]+_[0-9]+)_d1([0-9]+)_d2([0-9]+)"]', cell):
+                            if match not in computed_kernel:
+                                kernel_name, derive_x1, derive_x2 = match
+                                kernel_input = self.kernel_inputs[kernel_name]
+                                common_terms[f"{kernel_name}_d1{derive_x1}_d2{derive_x2}"] = sinusoidal_kernel_lo(
+                                    x1,
+                                    x2,
+                                    int(kernel_input["j"]),
+                                    float(kernel_input["a"]),
+                                    float(kernel_input["b"]),
+                                    int(derive_x1),
+                                    int(derive_x2)
+                                )
+                                computed_kernel.add(match)
+                        for match in re.findall(r'common_terms\["(ex_[0-9]+_[0-9]+)_d1([0-9]+)_d2([0-9]+)"]', cell):
+                            if match not in computed_kernel:
+                                kernel_name, derive_x1, derive_x2 = match
+                                kernel_input = self.kernel_inputs[kernel_name]
+                                common_terms[f"{kernel_name}_d1{derive_x1}_d2{derive_x2}"] = exponential_kernel_lo(
+                                    x1,
+                                    x2,
+                                    int(kernel_input["j"]),
+                                    float(kernel_input["a"]),
+                                    int(derive_x1),
+                                    int(derive_x2)
+                                )
+                                computed_kernel.add(match)
 
                     # invoke cell (MatmulLinearOperator is bad operand type for unary -)
                     K_list.append(eval('0' + cell if cell[0] == '-' else cell))
@@ -131,14 +160,11 @@ class LODE_Kernel(Kernel):
                 )
 
                 # prepare linear operators for permutation
-                if self.perm_rows_lin_op is None or self.perm_cols_lin_op is None:
-                    # TODO: move this to __init__()?
-                    h, w = K_list[0].shape
-                    perm_rows = torch.tensor([j * h + i for i in range(h) for j in range(kernel_count)]).to(K_list[0].device)
-                    perm_cols = torch.tensor([j * w + i for i in range(w) for j in range(kernel_count)]).to(K_list[0].device)
-                    # TODO: Type casting was patched locally, create pull request?
-                    self.perm_rows_lin_op = PermutationLinearOperator(perm_rows, dtype=K_lin_op.dtype)
-                    self.perm_cols_lin_op = PermutationLinearOperator(perm_cols, dtype=K_lin_op.dtype)
+                h, w = K_list[0].shape
+                perm_rows = torch.tensor([j * h + i for i in range(h) for j in range(kernel_count)]).to(K_list[0].device)
+                perm_cols = torch.tensor([j * w + i for i in range(w) for j in range(kernel_count)]).to(K_list[0].device)
+                self.perm_rows_lin_op = PermutationLinearOperator(perm_rows, dtype=K_lin_op.dtype)
+                self.perm_cols_lin_op = PermutationLinearOperator(perm_cols, dtype=K_lin_op.dtype)
 
                 # permutate rows and columns
                 return self.perm_rows_lin_op @ K_lin_op @ self.perm_cols_lin_op.mT
@@ -165,6 +191,7 @@ def create_kernel_matrix_from_diagonal(D, approx=False, **kwargs):
     #sage_covariance_matrix = [[0 for cell in range(max(len(D.rows()), len(D.columns())))] for row in range(max(len(D.rows()), len(D.columns())))]
     sage_covariance_matrix = [[0 for cell in range(len(D.columns()))] for row in range(len(D.columns()))]
     #for i in range(max(len(D.rows()), len(D.columns()))):
+    approx_kernel_inputs = dict() if approx else None
     for i in range(len(D.columns())):
         if i > len(D.diagonal())-1:
             entry = 0
@@ -193,7 +220,7 @@ def create_kernel_matrix_from_diagonal(D, approx=False, **kwargs):
                 #if root[0].is_complex():
                 param_dict[f"signal_variance_{i}_{rootnum}"] = torch.nn.Parameter(torch.tensor(float(0.)))
                 var(f"signal_variance_{i}_{rootnum}")
-                if root[0].is_imaginary() and not root[0].imag() == 0.0:
+                if root[0].imag() != 0.0:
                     # Check to prevent conjugates creating additional kernels
                     if not root[0].conjugate() in [r[0] for r in roots_copy]:
                         continue
@@ -203,16 +230,150 @@ def create_kernel_matrix_from_diagonal(D, approx=False, **kwargs):
                     roots_copy.remove(root)
 
                     # Create sinusoidal kernel
-                    var("exponent_runner")
-                    kernel_translation_kernel += globals()[f"signal_variance_{i}_{rootnum}"]**2*sum(t1**globals()["exponent_runner"] * t2**globals()["exponent_runner"], globals()["exponent_runner"], 0, root[1]-1) *\
-                                                    exp(root[0].real()*(t1 + t2)) * cos(root[0].imag()*(t1-t2))
+                    a = root[0].real()
+                    b = root[0].imag()
+                    j = root[1]
+                    if approx:
+                        var(f"s_{i}_{rootnum}")
+                        approx_kernel_inputs[f"s_{i}_{rootnum}"] = {"a": a, "b": b, "j": j}
+                        kernel_translation_kernel += globals()[f"signal_variance_{i}_{rootnum}"]**2 * globals()[f"s_{i}_{rootnum}"]
+                    else:
+                        var("exponent_runner")
+                        kernel_translation_kernel += globals()[f"signal_variance_{i}_{rootnum}"]**2*sum(t1**globals()["exponent_runner"] * t2**globals()["exponent_runner"], globals()["exponent_runner"], 0, j-1) *\
+                                                        exp(a*(t1 + t2)) * cos(b*(t1-t2))
                 else:
-                    var("exponent_runner")
-                    # Create the exponential kernel functions
-                    kernel_translation_kernel += globals()[f"signal_variance_{i}_{rootnum}"]**2*sum(t1**globals()["exponent_runner"] * t2**globals()["exponent_runner"], globals()["exponent_runner"], 0, root[1]-1) * exp(root[0]*(t1+t2))
+                    a = root[0]
+                    j = root[1]
+                    if approx:
+                        var(f"ex_{i}_{rootnum}")
+                        approx_kernel_inputs[f"ex_{i}_{rootnum}"] = {"a": a, "j": j}
+                        kernel_translation_kernel += globals()[f"signal_variance_{i}_{rootnum}"]**2 * globals()[f"ex_{i}_{rootnum}"]
+                    else:
+                        var("exponent_runner")
+                        # Create the exponential kernel functions
+                        kernel_translation_kernel += globals()[f"signal_variance_{i}_{rootnum}"]**2*sum(t1**globals()["exponent_runner"] * t2**globals()["exponent_runner"], globals()["exponent_runner"], 0, j-1) * exp(a*(t1+t2))
             translation_dictionary[f"LODEGP_kernel_{i}"] = kernel_translation_kernel 
         sage_covariance_matrix[i][i] = globals()[f"LODEGP_kernel_{i}"]
-    return sage_covariance_matrix, translation_dictionary, param_dict
+    return sage_covariance_matrix, translation_dictionary, param_dict, approx_kernel_inputs
+
+
+def _dim_helper(tens):
+    while tens.dim() < 2:
+        tens = tens.unsqueeze(-1)
+    return tens
+
+
+def exponential_kernel_lo(x1, x2, j, a, diff_order_x1=0, diff_order_x2=0):
+    # get inputs in desired dimensions
+    x1, x2 = tuple(_dim_helper(tens) for tens in (x1, x2))
+
+    def psi(x, k=0):
+        i = torch.arange(j)
+        exp_ax = torch.exp(a * x)
+
+        if k == 0:
+            return to_linear_operator(x**i * exp_ax)
+
+        else:
+            # create summation index m
+            m = torch.arange(k + 1).unsqueeze(-1)
+
+            # compute everything independent of x
+            k_tens = torch.tensor(k)
+            binoms = torch.exp(
+                torch.lgamma(k_tens + 1) -
+                torch.lgamma(m + 1) +
+                torch.lgamma(i + 1) -
+                torch.lgamma(k_tens - m + 1) -
+                torch.lgamma(i - (k_tens - m) + 1)
+            )
+            factors_ = a**m * binoms
+
+            # sum over m
+            sum_ = 0
+            for m_idx in range(k + 1):
+                # TODO: try implementation using large tensor and torch.sum() -> will use vastly more memory
+                #  , however this might run faster on cuda
+                sum_ += x**(i-(k_tens-m_idx)).clamp(min=0) * factors_[m_idx, :]
+
+            return to_linear_operator(exp_ax * sum_)
+
+    psi_x1 = psi(x1, diff_order_x1)
+    if torch.equal(x1, x2) and diff_order_x1 == diff_order_x2:
+        psi_x2 = psi_x1
+    else:
+        psi_x2 = psi(x2, diff_order_x2)
+
+    return psi_x1 @ psi_x2.mT
+
+
+def sinusoidal_kernel_lo(x1, x2, j, a, b, diff_order_x1=0, diff_order_x2=0):
+    # get inputs in desired dimensions
+    x1, x2 = tuple(_dim_helper(tens) for tens in (x1, x2))
+
+    def psi(x, k=0):
+        i = torch.arange(j)
+        exp_ax = torch.exp(a * x)
+
+        if k == 0:
+            return (to_linear_operator(x**i * exp_ax * torch.cos(b * x)),
+                    to_linear_operator(x**i * exp_ax * torch.sin(b * x)))
+
+        else:
+            k_tens = torch.tensor(k)
+            # sum over l
+            sum_l_c = 0
+            sum_l_s = 0
+            cos_bx = torch.cos(b*x)
+            sin_bx = torch.sin(b*x)
+            for l_idx in range(k + 1):
+                l_tens = torch.tensor(l_idx)
+                # create summation index m
+                m = torch.arange(k - l_idx + 1).unsqueeze(-1)
+
+                noms = torch.exp(
+                    torch.lgamma(k_tens + 1) -
+                    torch.lgamma(l_tens + 1) -
+                    torch.lgamma(m + 1) +
+                    torch.lgamma(i + 1) -
+                    torch.lgamma(k_tens - l_tens - m + 1) -
+                    torch.lgamma(i - (k_tens - l_tens - m) + 1)
+                )
+                factors_ = a**l_idx * noms
+
+                # sum over m
+                sum_m_c = 0
+                sum_m_s = 0
+                for m_idx in range(k-l_idx + 1):
+                    if m_idx % 4 == 0:
+                        dcos_dx = b**m_idx * cos_bx
+                        dsin_dx = b**m_idx * sin_bx
+                    elif m_idx % 4 == 1:
+                        dcos_dx = -b**m_idx * sin_bx
+                        dsin_dx = b**m_idx * cos_bx
+                    elif m_idx % 4 == 2:
+                        dcos_dx = -b**m_idx * cos_bx
+                        dsin_dx = -b**m_idx * sin_bx
+                    elif m_idx % 4 == 3:
+                        dcos_dx = b**m_idx * sin_bx
+                        dsin_dx = -b**m_idx * cos_bx
+                    clamped_factors = x**(i-(k_tens-l_idx-m_idx)).clamp(min=0) * factors_[m_idx, :]
+                    sum_m_c += clamped_factors * dcos_dx
+                    sum_m_s += clamped_factors * dsin_dx
+
+                sum_l_c += sum_m_c
+                sum_l_s += sum_m_s
+
+            return (to_linear_operator(exp_ax * sum_l_c),
+                    to_linear_operator(exp_ax * sum_l_s))
+
+    psi_c_x1, psi_s_x1 = psi(x1, diff_order_x1)
+    if torch.equal(x1, x2) and diff_order_x1 == diff_order_x2:
+        psi_c_x2, psi_s_x2 = psi_c_x1, psi_s_x1
+    else:
+        psi_c_x2, psi_s_x2 = psi(x2, diff_order_x2)
+
+    return  psi_c_x1 @ psi_c_x2.mT + psi_s_x1 @ psi_s_x2.mT
 
 
 def build_dict_for_SR_expression(expression, dx1, dx2):
@@ -222,6 +383,19 @@ def build_dict_for_SR_expression(expression, dx1, dx2):
     for coeff_dx1 in expression.coefficients(dx1):
         final_dict.update({(Integer(coeff_dx1[1]), Integer(coeff_dx2[1])): coeff_dx2[0] for coeff_dx2 in coeff_dx1[0].coefficients(dx2)})
     return final_dict
+
+
+def add_coeffs_to_name(subbed, name, d1, d2):
+    subbed = SR(subbed)
+    if "t1" in str(subbed) or "t2" in str(subbed):
+        # sanity check
+        raise RuntimeError(
+            f"Cannot approximate:\n{subbed}")
+    # do not diff yet (will be done by kernel), but add coeffs to name
+    diffed_name = f"{name}_d1{d1}_d2{d2}"
+    var(diffed_name)
+    return str(subbed.substitute(globals()[name] == globals()[diffed_name]))
+
 
 def differentiate_kernel_matrix(K, V, Vt, kernel_translation_dictionary, dx1, dx2, approx=False, **kwargs):
     """
@@ -239,7 +413,7 @@ def differentiate_kernel_matrix(K, V, Vt, kernel_translation_dictionary, dx1, dx
             for coeffs in diff_dictionary:
                 orig_cell_expression = diff_dictionary[coeffs]
                 if approx:
-                    # we need to consider each summand separately
+                    # we need to consider each summand separately # TODO: not sure if this is still true
                     if orig_cell_expression.operator() == add_vararg:
                         summands = orig_cell_expression.operands()
                     else:
@@ -252,17 +426,17 @@ def differentiate_kernel_matrix(K, V, Vt, kernel_translation_dictionary, dx1, dx
                                 subbed = summand.substitute(
                                     globals()[kernel_translation] == kernel_translation_dictionary[kernel_translation])
 
-                                match = re.search(r'approx_se_[0-9]+', str(subbed))
-                                if match is not None:
-                                    if "t1" in str(subbed) or "t2" in str(subbed):
-                                        # sanity check
-                                        raise RuntimeError(
-                                            f"Cannot approximate in case of input dependable SE terms:\n{subbed}")
-                                    # do not diff yet (will be done by kernel), but add coeffs to name
-                                    diffed_name = f"{match.group(0)}_{coeffs[0]}_{coeffs[1]}"
-                                    var(diffed_name)
-                                    temp_cell_expression += subbed.substitute(
-                                        globals()[match.group(0)] == globals()[diffed_name])
+                                expr = str(subbed)
+                                if approx:
+                                    for match in re.findall(r'approx_se_[0-9]+', expr):
+                                        expr = add_coeffs_to_name(expr, match, coeffs[0], coeffs[1])
+                                    for match in re.findall(r's_[0-9]+_[0-9]+', expr):
+                                        expr = add_coeffs_to_name(expr, match, coeffs[0], coeffs[1])
+                                    for match in re.findall(r'ex_[0-9]+_[0-9]+', expr):
+                                        expr= add_coeffs_to_name(expr, match, coeffs[0], coeffs[1])
+
+                                    temp_cell_expression += SR(expr)
+
                                 else:
                                     temp_cell_expression += SR(subbed).diff(t1, coeffs[0]).diff(t2, coeffs[1])
                     cell_expression += SR(temp_cell_expression)
@@ -369,8 +543,11 @@ def verify_sage_entry(kernel_string, local_vars):
     except Exception as E:
         raise Exception(f"The string was not safe and has not been used to construct the Kernel.\nPlease ensure that only valid operations are part of the kernel and all variables have been declared.\nYour kernel string was:\n'{kernel_string}'")
 
+
 def replace_approx_terms(kernel_string):
-    return re.sub('(approx_se_[0-9]+_[0-9]+_[0-9]+)', r'common_terms["\1"]', kernel_string)
+    subbed_se = re.sub('(approx_se_[0-9]+_d1[0-9]+_d2[0-9]+)', r'common_terms["\1"]', kernel_string)
+    subbed_ex = re.sub('(ex_[0-9]+_[0-9]+_d1[0-9]+_d2[0-9]+)', r'common_terms["\1"]', subbed_se)
+    return re.sub('(s_[0-9]+_[0-9]+_d1[0-9]+_d2[0-9]+)', r'common_terms["\1"]', subbed_ex)
 
 
 def translate_kernel_matrix_to_gpytorch_kernel(kernelmatrix, paramdict, common_terms=[], approx=False):
@@ -389,7 +566,4 @@ def translate_kernel_matrix_to_gpytorch_kernel(kernelmatrix, paramdict, common_t
             #print(replaced_var_cell)
             # kernel_call_matrix[rownum].append(compile(replaced_var_cell, "", "eval"))
             kernel_call_matrix[rownum].append(replaced_var_cell)
-
-
-
     return kernel_call_matrix

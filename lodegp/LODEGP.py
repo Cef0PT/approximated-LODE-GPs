@@ -172,12 +172,58 @@ def heating_system(**kwargs):
     return A, model_parameters, {"x":x, "a": a, "b": b}
 
 
+@register_LODEGP_model("PMSM")
+def pmsm(**kwargs):
+    bm = kwargs.get("bm", 0.01)
+    Jm = kwargs.get("Jm", 0.01)
+    p = kwargs.get("p", 8)
+    Phi = kwargs.get("Phi", 0.02)
+    c = 3/4 * p * Phi
+    model_parameters = torch.nn.ParameterDict()
+    R = QQ['x'];
+    (x,) = R._first_ngens(1)
+    A = matrix(R, Integer(1), Integer(2), [x + bm / Jm, -c/Jm])
+    return A, model_parameters, {"x":var("x")}
+
+
+@register_LODEGP_model("PMSM load dynamics")
+def pmsm_load(**kwargs):
+    bm = kwargs.get("bm", 0.01)
+    Jm = kwargs.get("Jm", 0.01)
+    p = kwargs.get("p", 8)
+    Phi = kwargs.get("Phi", 0.02)
+    c = 3/4 * p * Phi
+    kt = kwargs.get("kt", 200)
+    bl = kwargs.get("bl", 0.02)
+    Jl = kwargs.get("Jl", 0.05)
+    model_parameters = torch.nn.ParameterDict()
+    R = QQ['x'];
+    (x,) = R._first_ngens(1)
+    A = matrix(R, Integer(2), Integer(3), [x + (bm + kt) / Jm, -kt/Jm, -c/Jm, -kt/Jl, x + (bl + kt) / Jl, 0])
+    return A, model_parameters, {"x":var("x")}
+
+
 def unknown(**kwargs):
     model_parameters = torch.nn.ParameterDict()
     R = QQ['x']; (x,) = R._first_ngens(1)
     # System 1 (no idea)
     A = matrix(R, Integer(2), Integer(3), [x, -x**2+x-1, x-2, 2-x, x**2-x-1, -x])
+    return A, model_parameters, {"x":var("x")}
 
+@register_LODEGP_model("Example not controllable")
+def unknown_not_controllable(**kwargs):
+    model_parameters = torch.nn.ParameterDict()
+    R = QQ['x']; (x,) = R._first_ngens(1)
+    a_e, j_e = 1, 5
+    a_s, b_s, j_s = 1, 2, 5
+    A = matrix(R, Integer(2), Integer(2), [(x-a_e)**j_e, 0, 0, ((x-a_s)**2+b_s**2)**j_s])
+    return A, model_parameters, {"x":var("x")}
+
+@register_LODEGP_model("Minimal")
+def minimal(**kwargs):
+    model_parameters = torch.nn.ParameterDict()
+    R = QQ['x']; (x,) = R._first_ngens(1)
+    A = matrix(R, Integer(1), Integer(2), [x, -1])
     return A, model_parameters, {"x":var("x")}
 
 #        elif ODE_type == "Minimal correct":
@@ -233,11 +279,13 @@ class LODEGP(gpytorch.models.ExactGP):
         V = sage_eval(f"matrix({str(V_temp)})", locals=self.sage_locals)
         self.V = V
         Vt = V.transpose()
-        kernel_matrix, self.kernel_translation_dict, parameter_dict = create_kernel_matrix_from_diagonal(
+        kernel_matrix, self.kernel_translation_dict, parameter_dict, approx_kernel_inputs = create_kernel_matrix_from_diagonal(
             D,
             approx=approx,
             base_kernel=base_kernel
         )
+        if verbose:
+            print("kernel translation:", self.kernel_translation_dict)
         self.ode_count = self.num_tasks
         self.kernelsize = len(kernel_matrix)
         self.model_parameters.update(parameter_dict)
@@ -283,7 +331,8 @@ class LODEGP(gpytorch.models.ExactGP):
             self.covar_description,
             self.model_parameters,
             approx=approx,
-            number_of_eigenvalues=number_of_eigenvalues
+            number_of_eigenvalues=number_of_eigenvalues,
+            approx_kernel_inputs=approx_kernel_inputs
         )
 
 
