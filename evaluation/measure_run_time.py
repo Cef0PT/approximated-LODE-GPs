@@ -14,37 +14,42 @@ from gpytorch.settings import max_cholesky_size, max_preconditioner_size
 
 from lodegp.LODEGP import LODEGP
 
-DIRECTORY_PATH = Path("./data/measure_run_time")
-
-
-def log_warnings(rec):
-    for w in rec:
-        logging.warning(f"{w.category.__name__} - {w.message}",)
+DIRECTORY_PATH = Path("data/measure_run_time_fix")
+ODE_SYSTEM = "Example not controllable"
+SYSTEM_PARAMETERS = None
 
 
 def generate_data(nb_data: int) -> tuple[torch.Tensor, torch.Tensor]:
-    train_x = torch.linspace(2, 12, nb_data)
-    y_func = [
-        lambda x: 781/8000      * torch.sin(x) / x - 1/20      * torch.cos(x) / x**2 + 1/20      * torch.sin(x) / x**3,
-        lambda x: 881/8000      * torch.sin(x) / x - 1/40      * torch.cos(x) / x**2 + 1/40      * torch.sin(x) / x**3,
-        lambda x: 688061/800000 * torch.sin(x) / x - 2543/4000 * torch.cos(x) / x**2 + 1743/4000 * torch.sin(x) / x**3
-                  - 3/5 * torch.cos(x) / x**4 + 3/5 * torch.sin(x) / x**5
-    ]
-    train_y = torch.stack([f(train_x) for f in y_func], dim=-1)
+    train_x = torch.linspace(0, 10, nb_data)
+
+    y1_func = lambda x: torch.sin(x)
+    y2_func = lambda x: torch.sin(x) - torch.cos(x)
+    y3_func = lambda x: torch.sin(x) - torch.cos(x)
+    y1 = y1_func(train_x)
+    y2 = y2_func(train_x)
+    y3 = y3_func(train_x)
+    train_y = torch.stack([y1, y2, y3], dim=int(-1))
     
     return train_x, train_y
 
 
-def train_gp(train_x: torch.Tensor, train_y: torch.Tensor, nb_eigenvalues: int, device: torch.device, loss_calc: str):
+def train_gp(
+        train_x: torch.Tensor,
+        train_y: torch.Tensor,
+        nb_eigenvalues: int,
+        device: torch.device,
+        loss_calc: str
+):
     # define model, optimizer and loss
-    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=3)
+    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=train_y.size(-1))
     model = LODEGP(
         train_x, train_y,
         likelihood,
-        3,
-        approx=nb_eigenvalues!=0, number_of_eigenvalues=nb_eigenvalues,
-        ODE_name="Bipendulum",
-        system_parameters={"l1": 1.0, "l2": 2.0}
+        train_y.size(-1),
+        approx=nb_eigenvalues != 0,
+        number_of_eigenvalues=nb_eigenvalues,
+        ODE_name=ODE_SYSTEM,
+        system_parameters=SYSTEM_PARAMETERS
     )
     model.to(device)
     likelihood.train()
@@ -154,13 +159,11 @@ def handle_os_kill(log_dir):
     # look for run_id in last and third to last lines
     # (we can assume this was an OS kill, if one of them contains the first case described in doc string)
     match = re.search(r"Running experiment (N[0-9]+_n[0-9]+_.+)\n", last_three[-1])
-    if match is not None:
-        error_message = "OS KILL"
-        t = -1.
-    else:
+    error_message = "OS KILL"
+    t = -1.
+    if match is None:
         match = re.search(r"Running experiment (N[0-9]+_n[0-9]+_.+)", last_three[0])
         error_message = "OS KILL file write"
-        t, _ = get_run(match.group(1), csv_file_path)
 
     if match is not None:
         run_id = match.group(1)
@@ -170,6 +173,11 @@ def handle_os_kill(log_dir):
             f.write(f'\n{run_id},{t},"{error_message}"')
 
         logging.info("OS KILL detected, written data to csv file")
+
+
+def log_warnings(rec):
+    for w in rec:
+        logging.warning(f"{w.category.__name__} - {w.message}",)
 
 
 def main():
@@ -183,13 +191,13 @@ def main():
     # get all possible gp_ids (number data points, number eigenvalues, loss calc method, device)
     cuda_gp_ids = []
     cpu_gp_ids = []
-    for nb_eigenvalues in range(0, 301, 50):
+    for nb_eigenvalues in [50, 150, 250]:
         loss_calc_methods = ["mBCG"] if nb_eigenvalues != 0 else ["Cholesky", "mBCG"]
         for loss_calc_method in loss_calc_methods:
             cuda_gp_ids.append(f"n{nb_eigenvalues}_{loss_calc_method}_cuda")
-            cpu_gp_ids.append(f"n{nb_eigenvalues}_{loss_calc_method}_cpu")
+            #cpu_gp_ids.append(f"n{nb_eigenvalues}_{loss_calc_method}_cpu")
 
-    for all_gp_ids in [cuda_gp_ids, cpu_gp_ids]:
+    for all_gp_ids in [cpu_gp_ids, cuda_gp_ids]:
         # repeat training for increasing amount of data points until all gps fail
         failed_train = set()
         failed_file_write = set()

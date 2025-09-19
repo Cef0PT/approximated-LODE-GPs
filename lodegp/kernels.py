@@ -268,7 +268,7 @@ def exponential_kernel_lo(x1, x2, j, a, diff_order_x1=0, diff_order_x2=0):
     x1, x2 = tuple(_dim_helper(tens) for tens in (x1, x2))
 
     def psi(x, k=0):
-        i = torch.arange(j)
+        i = torch.arange(j, device=x.device)
         exp_ax = torch.exp(a * x)
 
         if k == 0:
@@ -276,10 +276,10 @@ def exponential_kernel_lo(x1, x2, j, a, diff_order_x1=0, diff_order_x2=0):
 
         else:
             # create summation index m
-            m = torch.arange(k + 1).unsqueeze(-1)
+            m = torch.arange(k + 1, device=x.device).unsqueeze(-1)
 
             # compute everything independent of x
-            k_tens = torch.tensor(k)
+            k_tens = torch.tensor(k, device=x.device)
             binoms = torch.exp(
                 torch.lgamma(k_tens + 1) -
                 torch.lgamma(m + 1) +
@@ -312,7 +312,7 @@ def sinusoidal_kernel_lo(x1, x2, j, a, b, diff_order_x1=0, diff_order_x2=0):
     x1, x2 = tuple(_dim_helper(tens) for tens in (x1, x2))
 
     def psi(x, k=0):
-        i = torch.arange(j)
+        i = torch.arange(j, device=x.device)
         exp_ax = torch.exp(a * x)
 
         if k == 0:
@@ -320,16 +320,16 @@ def sinusoidal_kernel_lo(x1, x2, j, a, b, diff_order_x1=0, diff_order_x2=0):
                     to_linear_operator(x**i * exp_ax * torch.sin(b * x)))
 
         else:
-            k_tens = torch.tensor(k)
+            k_tens = torch.tensor(k, device=x.device)
             # sum over l
             sum_l_c = 0
             sum_l_s = 0
             cos_bx = torch.cos(b*x)
             sin_bx = torch.sin(b*x)
             for l_idx in range(k + 1):
-                l_tens = torch.tensor(l_idx)
+                l_tens = torch.tensor(l_idx, device=x.device)
                 # create summation index m
-                m = torch.arange(k - l_idx + 1).unsqueeze(-1)
+                m = torch.arange(k - l_idx + 1, device=x.device).unsqueeze(-1)
 
                 noms = torch.exp(
                     torch.lgamma(k_tens + 1) -

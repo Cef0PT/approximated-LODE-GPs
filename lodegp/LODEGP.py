@@ -1,7 +1,9 @@
 #=======================================================================
 # Imports
 #=======================================================================
-import gpytorch 
+import re
+
+import gpytorch
 from sage.all import *
 import sage
 #https://ask.sagemath.org/question/41204/getting-my-own-module-to-work-in-sage/
@@ -185,21 +187,11 @@ def pmsm(**kwargs):
     A = matrix(R, Integer(1), Integer(2), [x + bm / Jm, -c/Jm])
     return A, model_parameters, {"x":var("x")}
 
-
-@register_LODEGP_model("PMSM load dynamics")
-def pmsm_load(**kwargs):
-    bm = kwargs.get("bm", 0.01)
-    Jm = kwargs.get("Jm", 0.01)
-    p = kwargs.get("p", 8)
-    Phi = kwargs.get("Phi", 0.02)
-    c = 3/4 * p * Phi
-    kt = kwargs.get("kt", 200)
-    bl = kwargs.get("bl", 0.02)
-    Jl = kwargs.get("Jl", 0.05)
+@register_LODEGP_model("Example not controllable")
+def unknown_not_controllable(**kwargs):
     model_parameters = torch.nn.ParameterDict()
-    R = QQ['x'];
-    (x,) = R._first_ngens(1)
-    A = matrix(R, Integer(2), Integer(3), [x + (bm + kt) / Jm, -kt/Jm, -c/Jm, -kt/Jl, x + (bl + kt) / Jl, 0])
+    R = QQ['x']; (x,) = R._first_ngens(1)
+    A = matrix(R, Integer(2), Integer(3), [x**2 + x, 0, 1, 0, x**2, 1])
     return A, model_parameters, {"x":var("x")}
 
 
@@ -208,15 +200,6 @@ def unknown(**kwargs):
     R = QQ['x']; (x,) = R._first_ngens(1)
     # System 1 (no idea)
     A = matrix(R, Integer(2), Integer(3), [x, -x**2+x-1, x-2, 2-x, x**2-x-1, -x])
-    return A, model_parameters, {"x":var("x")}
-
-@register_LODEGP_model("Example not controllable")
-def unknown_not_controllable(**kwargs):
-    model_parameters = torch.nn.ParameterDict()
-    R = QQ['x']; (x,) = R._first_ngens(1)
-    a_e, j_e = 1, 5
-    a_s, b_s, j_s = 1, 2, 5
-    A = matrix(R, Integer(2), Integer(2), [(x-a_e)**j_e, 0, 0, ((x-a_s)**2+b_s**2)**j_s])
     return A, model_parameters, {"x":var("x")}
 
 @register_LODEGP_model("Minimal")
